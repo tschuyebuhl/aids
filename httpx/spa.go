@@ -1,9 +1,13 @@
 package httpx
 
 import (
+	"embed"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 )
 
@@ -75,4 +79,29 @@ func ServeFileContents(file string, files http.FileSystem) http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		http.ServeContent(w, r, fi.Name(), fi.ModTime(), index)
 	}
+}
+
+func DevProxy(frontendAddress string) *httputil.ReverseProxy {
+	proxyURL, _ := url.Parse(frontendAddress)
+	proxy := httputil.NewSingleHostReverseProxy(proxyURL)
+
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		if resp.Header.Get("Upgrade") == "websocket" {
+			resp.Header.Set("Connection", "upgrade")
+		}
+		return nil
+	}
+	return proxy
+}
+
+func RunEmbeddedApp(appRoot string, embeddedFS embed.FS, mux *http.ServeMux) {
+	frontendFS, err := fs.Sub(embeddedFS, "frontend/dist")
+	if err != nil {
+		panic(err)
+	}
+	httpFS := http.FS(frontendFS)
+	fileServer := http.FileServer(httpFS)
+	serveIndex := ServeFileContents("index.html", httpFS)
+
+	mux.Handle(appRoot, Intercept404(fileServer, serveIndex))
 }

@@ -72,7 +72,7 @@ func parseQueryParams(values url.Values) *data.QueryParams {
 	var (
 		numericLimit  int64
 		limitIsNumber bool
-		limitParam    = firstNonEmpty(values.Get("limit"), values.Get("per_page"), values.Get("page_size"))
+		limitParam    = values.Get("limit")
 	)
 
 	if limitValue, isNumber := parseLimit(limitParam); limitValue != nil {
@@ -210,13 +210,4 @@ func parseInt(value string) (int64, bool) {
 		return 0, false
 	}
 	return v, true
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
 }

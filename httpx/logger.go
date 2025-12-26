@@ -29,6 +29,12 @@ func WithPanicHandler(handler PanicHandler) LoggerOption {
 	}
 }
 
+func LoggerMiddleware(opts ...LoggerOption) Middleware {
+	return func(next http.Handler) http.Handler {
+		return NewLogger(next, opts...)
+	}
+}
+
 type Logger struct {
 	handler      http.Handler
 	logger       *slog.Logger

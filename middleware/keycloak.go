@@ -1,3 +1,4 @@
+// Package middleware provides 3rd party plugins to use with http.Handler types
 package middleware
 
 import (
@@ -10,42 +11,63 @@ import (
 	"github.com/tschuyebuhl/aids/userctx"
 )
 
-type KeycloakAuthenticator struct {
-	handler     http.Handler
-	provider    *oidc.Provider
+type Keycloak struct {
+	verifier    *oidc.IDTokenVerifier
 	tokenMapper TokenMapper
 }
 
 type TokenMapper func(ctx context.Context, token *oidc.IDToken) (context.Context, error)
 
-type KeycloakOption func(*KeycloakAuthenticator)
+type KeycloakOption func(*Keycloak)
 
 func WithTokenMapper(mapper TokenMapper) KeycloakOption {
-	return func(a *KeycloakAuthenticator) {
+	return func(a *Keycloak) {
 		if mapper != nil {
 			a.tokenMapper = mapper
 		}
 	}
 }
 
-func NewKeycloakAuthenticator(handler http.Handler, provider *oidc.Provider, opts ...KeycloakOption) *KeycloakAuthenticator {
-	auth := &KeycloakAuthenticator{
-		handler:     handler,
-		provider:    provider,
+func NewKeycloak(provider *oidc.Provider, opts ...KeycloakOption) *Keycloak {
+	cfg := &Keycloak{
 		tokenMapper: defaultTokenMapper,
 	}
 	for _, opt := range opts {
-		opt(auth)
+		opt(cfg)
 	}
-	if auth.tokenMapper == nil {
-		auth.tokenMapper = defaultTokenMapper
+
+	var verifier *oidc.IDTokenVerifier
+	if provider != nil {
+		verifier = provider.Verifier(&oidc.Config{ClientID: "", SkipClientIDCheck: true})
 	}
-	return auth
+
+	return &Keycloak{
+		verifier:    verifier,
+		tokenMapper: cfg.tokenMapper,
+	}
 }
 
-func (a *KeycloakAuthenticator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !strings.HasPrefix(r.URL.Path, "/api/") {
-		a.handler.ServeHTTP(w, r)
+func (k *Keycloak) Handler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		k.serve(w, r, next)
+	})
+}
+
+func (k *Keycloak) Middleware() func(http.Handler) http.Handler {
+	return k.Handler
+}
+
+func KeycloakMiddleware(provider *oidc.Provider, opts ...KeycloakOption) *Keycloak {
+	return NewKeycloak(provider, opts...)
+}
+
+func (k *Keycloak) serve(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	if k.verifier == nil {
+		http.Error(w, "OIDC provider is required", http.StatusUnauthorized)
+		return
+	}
+	if next == nil {
+		http.Error(w, "Next handler is required", http.StatusInternalServerError)
 		return
 	}
 
@@ -61,15 +83,15 @@ func (a *KeycloakAuthenticator) ServeHTTP(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	idToken, err := a.provider.Verifier(&oidc.Config{ClientID: "", SkipClientIDCheck: true}).Verify(r.Context(), tokenString)
+	idToken, err := k.verifier.Verify(r.Context(), tokenString)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error verifying token: %s", err), http.StatusUnauthorized)
 		return
 	}
 
 	ctx := r.Context()
-	if a.tokenMapper != nil {
-		mappedCtx, err := a.tokenMapper(ctx, idToken)
+	if k.tokenMapper != nil {
+		mappedCtx, err := k.tokenMapper(ctx, idToken)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Error mapping token: %s", err), http.StatusUnauthorized)
 			return
@@ -77,7 +99,7 @@ func (a *KeycloakAuthenticator) ServeHTTP(w http.ResponseWriter, r *http.Request
 		ctx = mappedCtx
 	}
 
-	a.handler.ServeHTTP(w, r.WithContext(ctx))
+	next.ServeHTTP(w, r.WithContext(ctx))
 }
 
 func defaultTokenMapper(ctx context.Context, token *oidc.IDToken) (context.Context, error) {
